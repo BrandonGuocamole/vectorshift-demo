@@ -1,4 +1,4 @@
-# Exa RAG Demo with OpenAI and Live Web Crawling
+# VectorShift<>Exa RAG Demo with OpenAI and Live Web Crawling
 
 This repository demonstrates how to build a powerful Retrieval Augmented Generation (RAG) system using Exa's search API with OpenAI and live web crawling capabilities. The demo showcases both a custom RAG implementation and Exa's integrated answer endpoint.
 
