@@ -1,0 +1,254 @@
+import os
+import json
+import argparse
+from typing import List, Dict, Any, Optional
+import requests
+from openai import OpenAI
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Get API keys from environment variables
+EXA_API_KEY = os.getenv("EXA_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+# Check if API keys are available
+if not EXA_API_KEY:
+    raise ValueError("EXA_API_KEY is not set in the environment variables. Please check your .env file.")
+if not OPENAI_API_KEY:
+    raise ValueError("OPENAI_API_KEY is not set in the environment variables. Please check your .env file.")
+
+# Initialize OpenAI client
+openai_client = OpenAI(api_key=OPENAI_API_KEY)
+
+class ExaRAGDemo:
+    """
+    A demonstration of using Exa API for Retrieval Augmented Generation with OpenAI
+    and live web crawling capabilities.
+    """
+    
+    def __init__(self, exa_api_key: str):
+        self.api_key = exa_api_key
+        self.base_url = "https://api.exa.ai"
+        self.headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+    
+    def search(
+        self, 
+        query: str, 
+        num_results: int = 5, 
+        use_autoprompt: bool = True,
+        highlight_results: bool = True,
+        use_live_crawl: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Perform a search using Exa's search API.
+        
+        Args:
+            query: The search query
+            num_results: Number of results to return
+            use_autoprompt: Whether to use Exa's autoprompt feature
+            highlight_results: Whether to highlight relevant parts of the results
+            use_live_crawl: Whether to use Exa's LiveCrawl for uncached pages
+            
+        Returns:
+            Dict containing search results
+        """
+        endpoint = f"{self.base_url}/search"
+        
+        payload = {
+            "query": query,
+            "numResults": num_results,
+            "useAutoprompt": use_autoprompt,
+            "highlightResults": highlight_results
+        }
+        
+        # Enable live crawling if requested
+        if use_live_crawl:
+            payload["source"] = {"liveCrawl": True}
+        
+        response = requests.post(
+            endpoint,
+            headers=self.headers,
+            json=payload
+        )
+        
+        response.raise_for_status()
+        return response.json()
+    
+    def get_contents(self, urls: List[str]) -> Dict[str, Any]:
+        """
+        Get the full contents of specific URLs using Exa's get_contents endpoint.
+        
+        Args:
+            urls: List of URLs to get contents for
+            
+        Returns:
+            Dict containing the contents of the URLs
+        """
+        endpoint = f"{self.base_url}/contents"
+        
+        payload = {
+            "urls": urls
+        }
+        
+        response = requests.post(
+            endpoint,
+            headers=self.headers,
+            json=payload
+        )
+        
+        response.raise_for_status()
+        return response.json()
+    
+    def rag_with_openai(
+        self, 
+        query: str,
+        search_results: Dict[str, Any],
+        model: str = "gpt-4o"
+    ) -> str:
+        """
+        Perform RAG using OpenAI with Exa search results.
+        
+        Args:
+            query: The original user query
+            search_results: Results from Exa search
+            model: OpenAI model to use
+            
+        Returns:
+            String containing the generated response
+        """
+        # Extract relevant information from search results
+        contexts = []
+        
+        for result in search_results.get("results", []):
+            title = result.get("title", "Untitled")
+            url = result.get("url", "")
+            text = result.get("text", "")
+            
+            # If there are highlights, use those for more focused context
+            highlights = result.get("highlights", [])
+            if highlights:
+                highlighted_text = " ... ".join([h.get("text", "") for h in highlights])
+                context = f"Title: {title}\nURL: {url}\nContent: {highlighted_text}"
+            else:
+                context = f"Title: {title}\nURL: {url}\nContent: {text}"
+            
+            contexts.append(context)
+        
+        # Construct prompt with search results as context
+        prompt = f"""
+You are a helpful AI assistant with access to recent web information.
+Answer the following question based on the search results provided, and cite your sources.
+
+Question: {query}
+
+Search Results:
+{contexts}
+
+Provide a comprehensive answer to the question, citing the sources you used. If the search results don't contain relevant information, acknowledge this and suggest alternative approaches.
+"""
+        
+        # Get completion from OpenAI
+        response = openai_client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant that provides accurate information based on search results."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.3,  # Lower temperature for more factual responses
+            max_tokens=1000
+        )
+        
+        return response.choices[0].message.content
+    
+    def exa_answer_endpoint(self, query: str) -> Dict[str, Any]:
+        """
+        Use Exa's /answer endpoint which combines search and LLM generation.
+        
+        Args:
+            query: The user query
+            
+        Returns:
+            Dict containing the answer and sources
+        """
+        endpoint = f"{self.base_url}/answer"
+        
+        payload = {
+            "query": query,
+            "stream": False  # Set to True if you want streaming response
+        }
+        
+        response = requests.post(
+            endpoint,
+            headers=self.headers,
+            json=payload
+        )
+        
+        response.raise_for_status()
+        return response.json()
+
+def main():
+    parser = argparse.ArgumentParser(description="Exa RAG with OpenAI and Live Web Crawling Demo")
+    parser.add_argument("query", type=str, help="The search query to process")
+    parser.add_argument("--method", choices=["custom", "exa"], default="custom", 
+                       help="Whether to use custom RAG implementation or Exa's integrated /answer endpoint")
+    parser.add_argument("--live-crawl", action="store_true", help="Use Exa's LiveCrawl for real-time crawling")
+    parser.add_argument("--results", type=int, default=5, help="Number of search results to return")
+    parser.add_argument("--model", type=str, default="gpt-4o", help="OpenAI model to use (for custom method)")
+    
+    args = parser.parse_args()
+    
+    # Initialize the demo
+    demo = ExaRAGDemo(EXA_API_KEY)
+    
+    print(f"Processing query: '{args.query}'")
+    
+    if args.method == "custom":
+        # Custom RAG implementation
+        print("Using custom RAG implementation with OpenAI")
+        
+        # Step 1: Perform search with Exa
+        print("\nStep 1: Retrieving information from the web...")
+        search_results = demo.search(
+            query=args.query,
+            num_results=args.results,
+            use_live_crawl=args.live_crawl
+        )
+        
+        # Print search metadata
+        print(f"Retrieved {len(search_results.get('results', []))} results")
+        
+        # Step 2: Optionally fetch full contents for top results
+        urls = [r.get("url") for r in search_results.get("results", [])[:2]]
+        if urls:
+            print("\nStep 2: Fetching full contents of top results...")
+            contents = demo.get_contents(urls)
+            print(f"Fetched full contents for {len(contents.get('results', []))} URLs")
+        
+        # Step 3: Generate response with OpenAI using retrieved information
+        print("\nStep 3: Generating response with OpenAI...")
+        response = demo.rag_with_openai(args.query, search_results, model=args.model)
+        
+    else:
+        # Use Exa's integrated /answer endpoint
+        print("Using Exa's integrated /answer endpoint")
+        result = demo.exa_answer_endpoint(args.query)
+        response = result.get("answer", "No answer generated")
+        
+        # Print source information
+        sources = result.get("sources", [])
+        if sources:
+            response += "\n\nSources:"
+            for i, source in enumerate(sources, 1):
+                response += f"\n{i}. {source.get('title')} - {source.get('url')}"
+    
+    # Print the final response
+    print("\n--- Generated Response ---")
+    print(response)
+
+if __name__ == "__main__":
+    main()
